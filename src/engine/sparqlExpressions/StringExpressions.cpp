@@ -109,6 +109,49 @@ class StringExpressionImpl : public SparqlExpression {
   }
 };
 
+// Same as the `StringExpressionImpl` above, but with the LiteralOrValueGetter.
+template <size_t N, typename Function,
+          typename... AdditionalNonStringValueGetters>
+class LiteralExpressionImpl : public SparqlExpression {
+ private:
+  using ExpressionWithStr = NARY<N, FV<Function, LiteralOrIriValueGetter,
+                                       AdditionalNonStringValueGetters...>>;
+  using ExpressionWithoutStr =
+      NARY<N, FV<Function, LiteralOrIriValueGetterWithXsdStringFilter,
+                 AdditionalNonStringValueGetters...>>;
+
+  SparqlExpression::Ptr impl_;
+
+ public:
+  explicit LiteralExpressionImpl(
+      SparqlExpression::Ptr child,
+      std::same_as<SparqlExpression::Ptr> auto... children)
+      requires(sizeof...(children) + 1 == N) {
+    AD_CORRECTNESS_CHECK(child != nullptr);
+    if (child->isStrExpression()) {
+      auto childrenOfStr = std::move(*child).moveChildrenOut();
+      AD_CORRECTNESS_CHECK(childrenOfStr.size() == 1);
+      impl_ = std::make_unique<ExpressionWithStr>(
+          std::move(childrenOfStr.at(0)), std::move(children)...);
+    } else {
+      impl_ = std::make_unique<ExpressionWithoutStr>(std::move(child),
+                                                     std::move(children)...);
+    }
+  }
+
+  ExpressionResult evaluate(EvaluationContext* context) const override {
+    return impl_->evaluate(context);
+  }
+  std::string getCacheKey(const VariableToColumnMap& varColMap) const override {
+    return impl_->getCacheKey(varColMap);
+  }
+
+ private:
+  std::span<SparqlExpression::Ptr> childrenImpl() override {
+    return impl_->children();
+  }
+};
+
 // Lift a `Function` that takes one or multiple `std::string`s (possibly via
 // references) and returns an `Id` or `std::string` to a function that takes the
 // same number of `std::optional<std::string>` and returns `Id` or
@@ -248,55 +291,9 @@ class SubstrImpl {
   }
 };
 
-// Implementation of the `SUBSTR` SPARQL function. It dynamically
-// selects the appropriate value getter for the first argument based on whether
-// it is a `STR()` expression (using
-// `LiteralOrIriValueGetterWithXsdStringFilter`) or another type (using
-// `LiteralOrIriValueGetter`).
-class SubstrExpressionImpl : public SparqlExpression {
- private:
-  using ExpressionWithStr =
-      NARY<3, FV<SubstrImpl, LiteralOrIriValueGetterWithXsdStringFilter,
-                 NumericValueGetter, NumericValueGetter>>;
-  using ExpressionWithoutStr =
-      NARY<3, FV<SubstrImpl, LiteralOrIriValueGetter, NumericValueGetter,
-                 NumericValueGetter>>;
-
-  SparqlExpression::Ptr impl_;
-
- public:
-  explicit SubstrExpressionImpl(
-      SparqlExpression::Ptr child,
-      std::same_as<SparqlExpression::Ptr> auto... children)
-      requires(sizeof...(children) + 1 == 3) {
-    AD_CORRECTNESS_CHECK(child != nullptr);
-
-    if (child->isStrExpression()) {
-      auto childrenOfStr = std::move(*child).moveChildrenOut();
-      AD_CORRECTNESS_CHECK(childrenOfStr.size() == 1);
-      impl_ = std::make_unique<ExpressionWithStr>(
-          std::move(childrenOfStr.at(0)), std::move(children)...);
-    } else {
-      impl_ = std::make_unique<ExpressionWithoutStr>(std::move(child),
-                                                     std::move(children)...);
-    }
-  }
-
-  ExpressionResult evaluate(EvaluationContext* context) const override {
-    return impl_->evaluate(context);
-  }
-
-  std::string getCacheKey(const VariableToColumnMap& varColMap) const override {
-    return impl_->getCacheKey(varColMap);
-  }
-
- private:
-  std::span<SparqlExpression::Ptr> childrenImpl() override {
-    return impl_->children();
-  }
-};
-
-using SubstrExpression = SubstrExpressionImpl;
+using SubstrExpression =
+    LiteralExpressionImpl<3, SubstrImpl, NumericValueGetter,
+                          NumericValueGetter>;
 
 // STRSTARTS
 [[maybe_unused]] auto strStartsImpl = [](std::string_view text,
